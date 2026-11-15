@@ -11,6 +11,7 @@
   --voice   用哪個聲音（female／male／iai_9D…）
   --voices  聲音混用：逗號分隔，依序輪流分給每條連線（例：iai_9D,iai_36D,female → 1/3 本機語音），結果會依聲音分開統計
   --avatar  人物（預設內建小晴；可填 custom_xxx）
+  --procs   測試程式拆成幾個程序（預設 4）；人多時一個程序解不完 20 條畫面，fps 會被低估
   --text    固定說這句（預設三句 24 字左右的長句；聊天時第一小段通常只有 8～12 字）
 量什麼：
   開口延遲：送出文字 → 伺服器開始說話（含 TTS 排隊、對嘴）的秒數
@@ -19,6 +20,7 @@
 """
 import argparse
 import asyncio
+import multiprocessing as mp
 import statistics
 import time
 
@@ -99,7 +101,7 @@ class Client:
             t.cancel()
 
 
-async def main():
+def _args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8010")
     ap.add_argument("--n", type=int, default=15)
@@ -109,15 +111,26 @@ async def main():
     ap.add_argument("--voices", default="", help="聲音混用，例：iai_9D,female")
     ap.add_argument("--avatar", default="")
     ap.add_argument("--text", default="", help="每輪都說這句（例：--text 嗨，今天過得好嗎 模擬聊天時第一小段）")
+    ap.add_argument("--procs", type=int, default=4, help="測試程式拆成幾個程序（解畫面分攤到多個 CPU）")
     a = ap.parse_args()
     a.speak = min(a.speak, a.n)
-    voices = [v.strip() for v in a.voices.split(",") if v.strip()] or [a.voice]
-    clients = [Client(a.url.rstrip("/"), i, voices[i % len(voices)], a.avatar) for i in range(a.n)]
-    by_voice = {v: [] for v in voices}
+    a.procs = max(1, min(a.procs, a.n))
+    a.voices = [v.strip() for v in a.voices.split(",") if v.strip()] or [a.voice]
+    return a
+
+
+async def part_main(a, part, barrier, q):
+    """一個子程序：負責編號 i % procs == part 的連線；每一步跟其他子程序對齊時間"""
+    loop = asyncio.get_running_loop()
+
+    async def sync():
+        await loop.run_in_executor(None, barrier.wait)
+
+    mine = [Client(a.url.rstrip("/"), i, a.voices[i % len(a.voices)], a.avatar) for i in range(a.n) if i % a.procs == part]
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as http:
-        print(f"1. 建立 {a.n} 條連線…", flush=True)
+        await asyncio.sleep(part * 0.3)                # 錯開，不要同一瞬間一起連
         ok = []
-        for c in clients:
+        for c in mine:
             for attempt in range(3):                 # 上一輪測試的連線可能還在釋放，等一下再試
                 try:
                     await c.connect(http)
@@ -131,53 +144,89 @@ async def main():
                         pass
                     await asyncio.sleep(5)
             else:
-                print(f"   第 {c.idx + 1} 條連不上：{err}")
-                break
-        print(f"   成功 {len(ok)} 條")
-        if not ok:
-            return
+                q.put(("err", f"第 {c.idx + 1} 條連不上：{err}"))
+        q.put(("ok", len(ok)))
+        await sync()
         await asyncio.sleep(5)
-
-        b0 = [await c.bytes_video() for c in ok]
+        b0 = [c.frames for c in ok]
         await asyncio.sleep(5)
-        b1 = [await c.bytes_video() for c in ok]
-        idle = [(y - x) / 5 for x, y in zip(b0, b1)]
-        print(f"2. 待機時每條連線收到：平均 {statistics.mean(idle):.1f} fps（最低 {min(idle):.1f}）", flush=True)
-
-        lat_all = []
+        q.put(("idle", [(c.frames - x) / 5 for c, x in zip(ok, b0)]))
         for rd in range(a.rounds):
-            group = ok[(rd * a.speak) % len(ok):][:a.speak]
-            if len(group) < a.speak:
-                group += ok[:a.speak - len(group)]
+            await sync()
+            want = {(rd * a.speak + k) % a.n for k in range(a.speak)}
+            group = [c for c in ok if c.idx in want]
             text = a.text or SENTENCES[rd % len(SENTENCES)]
-            b0 = [await c.bytes_video() for c in ok]
+            b0 = [c.frames for c in ok]
             t0 = time.time()
             lats = await asyncio.gather(*[c.say(http, text) for c in group])
             await asyncio.gather(*[c.wait_quiet(http) for c in group])
+            await sync()                              # 等大家都講完，才算這段時間的 fps
             dt = time.time() - t0
-            b1 = [await c.bytes_video() for c in ok]
-            kbps = [(y - x) / dt for x, y in zip(b0, b1)]
-            got = [x for x in lats if x is not None]
-            lat_all += got
-            for c, x in zip(group, lats):
-                if x is not None:
-                    by_voice[c.voice].append(x)
-            miss = len(lats) - len(got)
-            print(f"3.{rd + 1} 同時 {len(group)} 人說話：開口延遲 中位數 {statistics.median(got):.1f}s、最慢 {max(got):.1f}s"
-                  + (f"、{miss} 人 40 秒內沒開口" if miss else "")
-                  + f"｜這段時間每條連線收到 平均 {statistics.mean(kbps):.1f} fps（最低 {min(kbps):.1f}）", flush=True)
+            q.put(("round", rd, [(c.voice, x) for c, x in zip(group, lats)], [(c.frames - x) / dt for c, x in zip(ok, b0)]))
             await asyncio.sleep(2)
-
-        if lat_all:
-            print(f"\n總結：{len(ok)} 人在線、每次 {a.speak} 人同時說話 → 開口延遲中位數 {statistics.median(lat_all):.1f}s、最慢 {max(lat_all):.1f}s")
-            if len(voices) > 1:
-                for v, xs in by_voice.items():
-                    if xs:
-                        print(f"  {v:10s}：{len(xs)} 次，中位數 {statistics.median(xs):.1f}s、最慢 {max(xs):.1f}s")
-        print("伺服器每秒格數：docker logs xiaoqing --since 3m 2>&1 | grep 'actual avg final fps' | tail -20")
-        print("4. 結束連線…")
         await asyncio.gather(*[c.close(http) for c in ok])
 
 
+def _run_part(a, part, barrier, q):
+    try:
+        asyncio.run(part_main(a, part, barrier, q))
+    except Exception as e:
+        q.put(("err", f"子程序 {part} 出錯：{e!r}"))
+        barrier.abort()
+    finally:
+        q.put(("done", part))
+
+
+def main():
+    a = _args()
+    ctx = mp.get_context("fork")
+    barrier, q = ctx.Barrier(a.procs), ctx.Queue()
+    print(f"1. 建立 {a.n} 條連線（測試程式分 {a.procs} 個程序）…", flush=True)
+    ps = [ctx.Process(target=_run_part, args=(a, k, barrier, q)) for k in range(a.procs)]
+    for p in ps:
+        p.start()
+    done, okn, idle, rounds = 0, 0, [], {}
+    lat_all, by_voice = [], {v: [] for v in a.voices}
+    while done < a.procs:
+        m = q.get()
+        kind = m[0]
+        if kind == "done":
+            done += 1
+        elif kind == "err":
+            print("   " + m[1], flush=True)
+        elif kind == "ok":
+            okn += m[1]
+        elif kind == "idle":
+            idle += m[1]
+            if len(idle) == okn:
+                print(f"   成功 {okn} 條")
+                print(f"2. 待機時每條連線收到：平均 {statistics.mean(idle):.1f} fps（最低 {min(idle):.1f}）", flush=True)
+        elif kind == "round":
+            rd, res, fps = m[1], m[2], m[3]
+            r = rounds.setdefault(rd, {"res": [], "fps": [], "parts": 0})
+            r["res"] += res
+            r["fps"] += fps
+            r["parts"] += 1
+            if r["parts"] == a.procs:
+                got = [x for _, x in r["res"] if x is not None]
+                lat_all += got
+                for v, x in r["res"]:
+                    if x is not None:
+                        by_voice[v].append(x)
+                miss = len(r["res"]) - len(got)
+                lat = f"開口延遲 中位數 {statistics.median(got):.1f}s、最慢 {max(got):.1f}s" if got else "沒人開口"
+                print(f"3.{rd + 1} 同時 {len(r['res'])} 人說話：{lat}" + (f"、{miss} 人 40 秒內沒開口" if miss else "")
+                      + f"｜這段時間每條連線收到 平均 {statistics.mean(r['fps']):.1f} fps（最低 {min(r['fps']):.1f}）", flush=True)
+    for p in ps:
+        p.join()
+    if lat_all:
+        print(f"\n總結：{okn} 人在線、每次 {a.speak} 人同時說話 → 開口延遲中位數 {statistics.median(lat_all):.1f}s、最慢 {max(lat_all):.1f}s")
+        if len(a.voices) > 1:
+            for v, xs in by_voice.items():
+                if xs:
+                    print(f"  {v:10s}：{len(xs)} 次，中位數 {statistics.median(xs):.1f}s、最慢 {max(xs):.1f}s")
+    print("伺服器每秒格數：for c in xiaoqing xiaoqing-w1 xiaoqing-w2 xiaoqing-w3; do docker logs $c --since 5m 2>&1 | grep 'actual avg final fps' | tail -3; done")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
