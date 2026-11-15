@@ -16,10 +16,11 @@
 | 人物 | 內建小晴（wav2lip 即時對嘴，25 fps）；動作：揮手、比讚、拍手、看窗外、轉頭（LLM 回答時會自己帶） |
 | 照片學伴 | 上傳一張照片 → 去背、素色背景、Real-ESRGAN 放大、LivePortrait 生成待機動作 → 幾分鐘內可以對話；臉框固定大小＋平滑，畫面更穩 |
 | 聲音 | IndexTTS-2.5 台灣口音情緒語音（開心、難過、生氣、溫柔、平常）；女聲 5、男聲 5 可試聽；現場錄音克隆自己的聲音；學校 iAI 雲端語音（9D、36D…） |
-| 對話 | 學校 iAI 平台 LLM、人設切換（學伴／女友）、可打斷、語音輸入 |
+| 對話 | 實驗室專用 LLM（nemotron-3-super-120b，連不上自動改用學校 iAI）、人設切換（學伴／女友）、可打斷、語音輸入；回答自動轉台灣繁體 |
+| 多人 | 一台 DGX 開 4 個小晴程序分攤連線，**20 人同時在線**（實測 6 人同時說話：畫面每秒 20～25 格、開口約 3～5 秒）；聲音可混用 |
 | 學習 | 讀書黑板、提醒；輸入學號密碼由 DGX 登入教學平台，同步這學期的作業與考試 |
 | 對外串接 | API v1：金鑰＋一次性入場券、WebRTC（JSON／WHEP）、`/say` 帶情緒與動作、**WebSocket 收對方的 TTS 語音並對嘴**、iframe／App WebView 嵌入（見 [docs/api_v1.md](docs/api_v1.md)） |
-| 存取 | 區網直接連；公開網址（Cloudflare Tunnel）＋通關碼；Cloudflare TURN（校外看得到影像） |
+| 存取 | 區網直接連；公開網址（Cloudflare Tunnel）＋通關碼；可設定 TURN（嚴格網路也看得到影像） |
 
 ---
 
@@ -31,7 +32,8 @@
   WebRTC：影像 H.264 ＋ 聲音 Opus      │          /say、WebSocket 語音
                                       ▼
 LiveTalking（app.py，port 8010）
- ├─ llm.py              學校 iAI LLM：人設、記憶、斷句、情緒／動作標籤
+ ├─ llm.py              LLM（實驗室平台／學校 iAI）：人設、記憶、斷句、情緒／動作標籤
+ ├─ server/gf_dispatch  多人分配：主程序滿了就把新連線轉給 worker（tools/workers.sh）
  ├─ tts/gftts.py        語音：IndexTTS（8007）→ BreezyVoice（8006）→ CosyVoice3（8005）→ Breeze2-VITS（8002）；或學校 iAI 語音
  ├─ wav2lip             依聲音逐格生成嘴型，貼回人物畫面（server/gf_paste.py 柔邊）
  ├─ server/gf_*.py      門禁、TURN、語音輸入、聲音清單、照片學伴、黑板、教學平台同步、姿勢動作、對外 API
