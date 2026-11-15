@@ -9,6 +9,7 @@
   --speak   每一輪同時說話幾人
   --rounds  幾輪
   --voice   用哪個聲音（female／male／iai_9D…）
+  --voices  聲音混用：逗號分隔，依序輪流分給每條連線（例：iai_9D,iai_36D,female → 1/3 本機語音），結果會依聲音分開統計
   --avatar  人物（預設內建小晴；可填 custom_xxx）
   --text    固定說這句（預設三句 24 字左右的長句；聊天時第一小段通常只有 8～12 字）
 量什麼：
@@ -105,11 +106,14 @@ async def main():
     ap.add_argument("--speak", type=int, default=5)
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--voice", default="female")
+    ap.add_argument("--voices", default="", help="聲音混用，例：iai_9D,female")
     ap.add_argument("--avatar", default="")
     ap.add_argument("--text", default="", help="每輪都說這句（例：--text 嗨，今天過得好嗎 模擬聊天時第一小段）")
     a = ap.parse_args()
     a.speak = min(a.speak, a.n)
-    clients = [Client(a.url.rstrip("/"), i, a.voice, a.avatar) for i in range(a.n)]
+    voices = [v.strip() for v in a.voices.split(",") if v.strip()] or [a.voice]
+    clients = [Client(a.url.rstrip("/"), i, voices[i % len(voices)], a.avatar) for i in range(a.n)]
+    by_voice = {v: [] for v in voices}
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as http:
         print(f"1. 建立 {a.n} 條連線…", flush=True)
         ok = []
@@ -155,6 +159,9 @@ async def main():
             kbps = [(y - x) / dt for x, y in zip(b0, b1)]
             got = [x for x in lats if x is not None]
             lat_all += got
+            for c, x in zip(group, lats):
+                if x is not None:
+                    by_voice[c.voice].append(x)
             miss = len(lats) - len(got)
             print(f"3.{rd + 1} 同時 {len(group)} 人說話：開口延遲 中位數 {statistics.median(got):.1f}s、最慢 {max(got):.1f}s"
                   + (f"、{miss} 人 40 秒內沒開口" if miss else "")
@@ -163,6 +170,10 @@ async def main():
 
         if lat_all:
             print(f"\n總結：{len(ok)} 人在線、每次 {a.speak} 人同時說話 → 開口延遲中位數 {statistics.median(lat_all):.1f}s、最慢 {max(lat_all):.1f}s")
+            if len(voices) > 1:
+                for v, xs in by_voice.items():
+                    if xs:
+                        print(f"  {v:10s}：{len(xs)} 次，中位數 {statistics.median(xs):.1f}s、最慢 {max(xs):.1f}s")
         print("伺服器每秒格數：docker logs xiaoqing --since 3m 2>&1 | grep 'actual avg final fps' | tail -20")
         print("4. 結束連線…")
         await asyncio.gather(*[c.close(http) for c in ok])
