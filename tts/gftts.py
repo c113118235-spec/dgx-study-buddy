@@ -49,6 +49,8 @@ def _load_conf():
     """data/tts.json（改了馬上生效）：
       "order": ["iai", "local"]   不管選哪個聲音都先用 iAI（沒寫 = 只有選「iAI 聲音」才用）
       "iai": {"voices": ["9D", "36D"], "extra": {...}}   開始畫面列出哪些 iAI 聲音（預設 9D、36D）、額外參數
+      "iai": {..., "lab": {"model": "Speaker"}}   先用實驗室專用平台的語音（網址、金鑰跟 data/llm.json 一樣），
+                                                   失敗才用學校 iAI；"url" 可另外指定完整的 /audio/speech 網址
     """
     try:
         m = os.path.getmtime(TTS_CONF)
@@ -72,6 +74,32 @@ def _load_conf():
 
 def _order() -> list:
     return _load_conf()["order"]
+
+
+_llm_json = {"mtime": None, "data": None}
+
+
+def _lab_tts():
+    """tts.json 的 iai.lab 有設定時：回傳實驗室語音的網址、模型、金鑰（金鑰從 data/llm.json 拿，不重複存）"""
+    lab = _load_conf()["iai"].get("lab")
+    if not isinstance(lab, dict) or not lab.get("model"):
+        return None
+    p = os.path.join("data", "llm.json")
+    try:
+        m = os.path.getmtime(p)
+        if m != _llm_json["mtime"]:
+            import json
+            with open(p, encoding="utf-8") as f:
+                _llm_json.update(mtime=m, data=json.load(f))
+    except Exception as e:
+        logger.warning(f"實驗室語音：讀不到 {p}：{e}")
+        return None
+    d = _llm_json["data"] or {}
+    key = d.get("api_key") or os.getenv(str(d.get("key_env") or ""), "")
+    url = lab.get("url") or (str(d.get("base_url", "")).rstrip("/") + "/audio/speech")
+    if not key or not url.startswith("http"):
+        return None
+    return {"url": url, "model": lab["model"], "key": key, "timeout": float(lab.get("timeout", 8))}
 
 
 def iai_voices() -> list:
@@ -134,25 +162,35 @@ def _decode(data: bytes):
 @register("tts", "gftts")
 class GfTTS(BaseTTS):
     def _fetch_iai(self, text: str, voice: str | None = None) -> bytes | None:
+        lab = _lab_tts()
+        if lab:
+            data = self._post_tts("實驗室語音", lab["url"], lab["key"], {**iai_body(text, voice=voice), "model": lab["model"]},
+                                  text, timeout=lab["timeout"])
+            if data:
+                return data
         key = os.getenv("IAI_API_KEY", "")
         if not key:
             logger.warning("iAI 語音：沒有 IAI_API_KEY，跳過")
             return None
+        return self._post_tts("iAI 語音", IAI_TTS_URL, key, iai_body(text, voice=voice), text)
+
+    def _post_tts(self, name, url, key, body, text, timeout=None) -> bytes | None:
         with _iai_lock:
             _iai_busy[0] += 1
             busy = _iai_busy[0]
         t0 = time.time()
         try:
-            r = requests.post(IAI_TTS_URL, timeout=IAI_TTS_TIMEOUT,
-                              headers={"x-litellm-api-key": f"Bearer {key}", "accept": "application/json"},
-                              json=iai_body(text, voice=voice))
+            r = requests.post(url, timeout=timeout or IAI_TTS_TIMEOUT,
+                              headers={"x-litellm-api-key": f"Bearer {key}", "Authorization": f"Bearer {key}",
+                                       "accept": "application/json"},
+                              json=body)
             r.raise_for_status()
             if len(r.content) < 200:
                 raise ValueError(f"回傳太短：{r.content[:100]!r}")
-            logger.info(f"iAI 語音 {time.time() - t0:.2f}s {len(text)}字（同時 {busy} 句在等 iAI）")
+            logger.info(f"{name} {time.time() - t0:.2f}s {len(text)}字（同時 {busy} 句在等）")
             return r.content
         except Exception as e:
-            logger.warning(f"iAI 語音失敗（{time.time() - t0:.2f}s，同時 {busy} 句），改用本機語音：{e}")
+            logger.warning(f"{name}失敗（{time.time() - t0:.2f}s，同時 {busy} 句），改用下一個：{e}")
             return None
         finally:
             with _iai_lock:
