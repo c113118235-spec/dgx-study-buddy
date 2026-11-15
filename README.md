@@ -124,7 +124,7 @@ cloudflared 容器 ──► 公開 https 網址
 | `tools/avatar_stability.py` | 量測、修正人物臉框穩定度（改之前自動備份，可還原） |
 | `tools/tts_probe.py` | 測實驗室平台的語音模型、聲音、速度 |
 | `tools/llm_compare.py` | 比較候選 LLM 的開口速度、簡體字、情緒標籤（`--lab` 測實驗室平台） |
-| `tools/load_test.py`、`tools/workers.sh` | 多人壓力測試；開 worker 讓一台 DGX 撐 15 人 |
+| `tools/load_test.py`、`tools/workers.sh` | 多人壓力測試；開 worker 讓一台 DGX 撐 20 人 |
 | `tools/iai_probe.py` | 測試 iAI 語音的參數 |
 | `tools/install_voices.py` | 安裝內建聲音 |
 | `tools/lp_worker.sh`、`tools/liveportrait/idle_gen.py` | 照片學伴的待機影片 |
