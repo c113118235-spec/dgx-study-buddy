@@ -1,11 +1,12 @@
 {
- "default": "girlfriend",
+ "default": "study_buddy",
  "personas": {
   "girlfriend": {
    "label": "女友",
    "prompt": null,
    "examples": null,
-   "greeting": "【溫柔】好呀，我回來當你的女朋友了。【開心】今天過得怎麼樣？"
+   "greeting": "【溫柔】好呀，我回來當你的女朋友了。【開心】今天過得怎麼樣？",
+   "hidden": true
   },
   "study_buddy": {
    "label": "學伴",

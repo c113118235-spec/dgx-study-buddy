@@ -104,6 +104,9 @@ def _personas() -> dict:
     try:
         with open(PERSONA_FILE, encoding="utf-8") as f:
             d = json.load(f)
+            if isinstance(d.get("personas"), dict):
+                # "hidden": true 的人設先收起來：不出現在切換鈕、也不能切過去（設定保留，改回 false 就恢復）
+                d["personas"] = {k: v for k, v in d["personas"].items() if not (v or {}).get("hidden")}
             if isinstance(d.get("personas"), dict) and d["personas"]:
                 return d
     except (OSError, ValueError):
