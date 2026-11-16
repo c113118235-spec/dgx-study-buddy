@@ -116,7 +116,8 @@ TURN_CONF = os.path.join("data", "turn.json")
 def _turn_file() -> dict:
     """data/turn.json（chmod 600、不進 git），改了不用重建容器：
       {"credentials_url": "https://<你的app>.metered.live/api/v1/turn/credentials?apiKey=<金鑰>"}   ← Metered 等 REST 服務
-      或 {"ice_servers": [{"urls": "turn:host:443", "username": "...", "credential": "..."}]}       ← 固定帳號"""
+      或 {"ice_servers": [{"urls": "turn:host:443", "username": "...", "credential": "..."}]}       ← 固定帳號
+      或 {"cloudflare": {"key_id": "...", "api_token": "..."}}                                      ← Cloudflare TURN"""
     try:
         with open(TURN_CONF, encoding="utf-8") as f:
             return json.load(f)
@@ -127,9 +128,17 @@ def _turn_file() -> dict:
         return {}
 
 
+def _cf_keys():
+    """Cloudflare TURN 金鑰：環境變數，或 data/turn.json 的 {"cloudflare": {"key_id": ..., "api_token": ...}}（不用重建容器）"""
+    if TURN_KEY_ID and TURN_TOKEN:
+        return TURN_KEY_ID, TURN_TOKEN
+    cf = _turn_file().get("cloudflare") or {}
+    return str(cf.get("key_id", "")), str(cf.get("api_token", ""))
+
+
 def turn_configured() -> bool:
     c = _turn_file()
-    return bool((TURN_KEY_ID and TURN_TOKEN) or c.get("credentials_url") or c.get("ice_servers"))
+    return bool(all(_cf_keys()) or c.get("credentials_url") or c.get("ice_servers"))
 
 
 async def _other_turn(stun):
@@ -163,15 +172,16 @@ async def _other_turn(stun):
 async def get_ice_servers():
     """回傳 [{urls, username?, credential?}, ...]；沒設定 TURN 就只有 STUN"""
     stun = [{"urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]}]
-    if not (TURN_KEY_ID and TURN_TOKEN):
+    key_id, token = _cf_keys()
+    if not (key_id and token):
         return await _other_turn(stun)
     if _turn_cache["servers"] and time.time() - _turn_cache["t"] < TURN_TTL / 2:
         return _turn_cache["servers"]
-    url = f"https://rtc.live.cloudflare.com/v1/turn/keys/{TURN_KEY_ID}/credentials/generate-ice-servers"
+    url = f"https://rtc.live.cloudflare.com/v1/turn/keys/{key_id}/credentials/generate-ice-servers"
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
             async with s.post(url, json={"ttl": TURN_TTL},
-                              headers={"Authorization": f"Bearer {TURN_TOKEN}"}) as r:
+                              headers={"Authorization": f"Bearer {token}"}) as r:
                 if r.status not in (200, 201):
                     logger.warning(f"[gf-turn] Cloudflare 回 {r.status}: {(await r.text())[:200]}")
                     return stun
