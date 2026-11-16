@@ -365,6 +365,29 @@ header h1, header .ai-tag, header .icon-btn, .persona-switch button { white-spac
 .pick-form .row button.primary { background: var(--accent); border-color: var(--accent); font-weight: 700; }
 .pick-form .row button:disabled { opacity: .5; cursor: default; }
 .pick-form .err { margin: 0; min-height: 18px; font-size: 13px; color: #F2998C; }
+.pick-form .src-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.pick-form .src-row button { flex: 1; min-width: 140px; padding: 10px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,.25);
+  background: rgba(255,255,255,.06); color: #FFF; font: inherit; font-size: 15px; cursor: pointer; }
+.pick-face.cam { background: rgba(232,106,166,.18); border: 2px dashed rgba(243,166,216,.6); font-size: 40px; }
+/* 鏡頭拍照 */
+.cam-dlg { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: rgba(0,0,0,.82); }
+.cam-dlg[hidden] { display: none; }
+.cam-box { width: min(720px, 100%); display: flex; flex-direction: column; gap: 12px; color: #FFF; }
+.cam-view { position: relative; width: 100%; aspect-ratio: 3 / 4; max-height: 70vh; border-radius: 16px; overflow: hidden; background: #000; }
+@media (min-aspect-ratio: 1/1) { .cam-view { aspect-ratio: 4 / 3; } }
+.cam-view video, .cam-view img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cam-view video.mirror { transform: scaleX(-1); }
+.cam-guide { position: absolute; left: 50%; top: 46%; width: 46%; aspect-ratio: 3 / 4; transform: translate(-50%, -50%);
+  border: 3px dashed rgba(255,255,255,.7); border-radius: 50%; pointer-events: none; }
+.cam-count { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 120px; font-weight: 800;
+  text-shadow: 0 0 24px rgba(0,0,0,.6); pointer-events: none; }
+.cam-tip { margin: 0; font-size: 14px; color: rgba(255,255,255,.75); text-align: center; }
+.cam-btns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.cam-btns button { padding: 12px 22px; border-radius: 24px; border: 1px solid rgba(255,255,255,.35); background: transparent; color: #FFF;
+  font: inherit; font-size: 16px; cursor: pointer; }
+.cam-btns button.primary { background: var(--accent); border-color: var(--accent); font-weight: 700; }
+.cam-btns button[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -388,11 +411,14 @@ header h1, header .ai-tag, header .icon-btn, .persona-switch button { white-spac
     <div class="pick-grid" id="pickGrid">
       <button type="button" class="pick-card" id="pickDefault"><span class="pick-face">晴</span><b>小晴</b><small>預設角色<br>陪你一起讀書的 AI 學伴</small></button>
       <button type="button" class="pick-card" id="pickAdd"><span class="pick-face add">＋</span><b>用照片建立學伴</b><small>需要本人同意<br>製作約幾分鐘</small></button>
+      <button type="button" class="pick-card" id="pickCam"><span class="pick-face cam">📷</span><b>用鏡頭拍照建立</b><small>用這台裝置的鏡頭<br>現場拍一張</small></button>
     </div>
   </div>
   <form class="pick-form" id="pickForm" hidden>
     <h2>用照片建立學伴</h2>
     <label class="drop" id="pickDrop"><input type="file" id="pickFile" accept="image/jpeg,image/png,image/webp" hidden><img id="pickPreview" alt="照片預覽" hidden><span id="pickDropText">點這裡選照片<br>正面、臉部清楚、光線充足，只有一個人</span></label>
+    <div class="src-row"><button type="button" id="pickCamBtn">📷 用鏡頭拍照</button><button type="button" id="pickFileBtn">🖼 從相簿／檔案選</button></div>
+    <input type="file" id="pickCapture" accept="image/*" capture="user" hidden>
     <label class="field">學伴的名字<input id="pickName" maxlength="12" placeholder="例如：阿哲" autocomplete="off"></label>
     <label class="ck"><input type="checkbox" id="pickC1">照片是我本人，或已取得照片中人物的同意</label>
     <label class="ck"><input type="checkbox" id="pickC2">照片中的人已滿 18 歲</label>
@@ -1575,6 +1601,122 @@ function xqElSync(XQ) {
     } finally { $p("pickSubmit").disabled = false; }
   };
   render(); refresh();
+})();
+</script>
+<div class="cam-dlg" id="camDlg" hidden role="dialog" aria-modal="true" aria-label="用鏡頭拍照">
+  <div class="cam-box">
+    <div class="cam-view">
+      <video id="camVideo" autoplay playsinline muted class="mirror"></video>
+      <img id="camShot" alt="剛拍的照片" hidden>
+      <div class="cam-guide" id="camGuide"></div>
+      <div class="cam-count" id="camCount"></div>
+    </div>
+    <p class="cam-tip" id="camTip">臉放進虛線框裡，看鏡頭、光線充足，畫面只有一個人</p>
+    <div class="cam-btns">
+      <button type="button" id="camCancel">取消</button>
+      <button type="button" id="camFlip" hidden>切換鏡頭</button>
+      <button type="button" class="primary" id="camSnap">拍照（3 秒）</button>
+      <button type="button" id="camRetake" hidden>重拍</button>
+      <button type="button" class="primary" id="camUse" hidden>使用這張</button>
+    </div>
+  </div>
+</div>
+<script>
+/* 用裝置鏡頭拍照建立學伴：拍好的照片交給原本的「用照片建立學伴」表單（同樣要勾同意事項才會上傳） */
+(() => {
+  const $c = (id) => document.getElementById(id);
+  let stream = null, facing = "user", shotBlob = null, timer = null;
+  const canLive = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && window.isSecureContext;
+
+  function stop() {
+    if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+    clearInterval(timer); timer = null; $c("camCount").textContent = "";
+  }
+  function close() { stop(); $c("camDlg").hidden = true; }
+  function mode(shot) {
+    $c("camVideo").hidden = shot; $c("camShot").hidden = !shot; $c("camGuide").hidden = shot;
+    $c("camSnap").hidden = shot; $c("camRetake").hidden = !shot; $c("camUse").hidden = !shot;
+    $c("camFlip").hidden = shot || !$c("camFlip").dataset.multi;
+  }
+  async function startCam() {
+    stop();
+    $c("camTip").textContent = "正在開啟鏡頭…";
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
+    } catch (e) {
+      const why = e.name === "NotAllowedError" ? "沒有允許使用鏡頭：請在瀏覽器網址列旁的設定裡允許「相機」，再試一次"
+        : e.name === "NotFoundError" ? "這台裝置找不到鏡頭" : e.name === "NotReadableError" ? "鏡頭正被其他程式使用中" : "開不了鏡頭（" + e.name + "）";
+      $c("camTip").textContent = why;
+      return false;
+    }
+    const v = $c("camVideo");
+    v.srcObject = stream;
+    v.classList.toggle("mirror", facing === "user");
+    try {
+      const cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+      $c("camFlip").dataset.multi = cams.length > 1 ? "1" : "";
+    } catch (e) { $c("camFlip").dataset.multi = ""; }
+    mode(false);
+    $c("camTip").textContent = "臉放進虛線框裡，看鏡頭、光線充足，畫面只有一個人";
+    return true;
+  }
+  function snapNow() {
+    const v = $c("camVideo");
+    if (!v.videoWidth) return;
+    const c = document.createElement("canvas");
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    c.getContext("2d").drawImage(v, 0, 0);              // 存成實際方向（不鏡像），跟一般照片一樣
+    c.toBlob((b) => {
+      if (!b) return;
+      shotBlob = b;
+      $c("camShot").src = URL.createObjectURL(b);
+      stop(); mode(true);
+      $c("camTip").textContent = "臉清楚嗎？不滿意可以重拍";
+    }, "image/jpeg", 0.92);
+  }
+  function countdown() {
+    let n = 3;
+    $c("camSnap").disabled = true; $c("camCount").textContent = n;
+    timer = setInterval(() => {
+      n -= 1;
+      if (n > 0) { $c("camCount").textContent = n; return; }
+      clearInterval(timer); timer = null; $c("camCount").textContent = ""; $c("camSnap").disabled = false;
+      snapNow();
+    }, 1000);
+  }
+  function useFile(f) {                                 // 交給原本表單的 pickFile 流程
+    const dt = new DataTransfer();
+    dt.items.add(f);
+    const inp = document.getElementById("pickFile");
+    inp.files = dt.files;
+    inp.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  async function openCam() {
+    document.getElementById("pickForm").hidden = false;
+    document.getElementById("pickPanel").hidden = true;
+    if (!canLive) {                                     // http 或舊瀏覽器：手機會直接開相機 App，電腦會開選檔
+      document.getElementById("pickCapture").click();
+      return;
+    }
+    $c("camDlg").hidden = false; shotBlob = null; mode(false);
+    if (!(await startCam())) { $c("camSnap").hidden = true; }
+  }
+  document.getElementById("pickCam").addEventListener("click", openCam);
+  document.getElementById("pickCamBtn").addEventListener("click", openCam);
+  document.getElementById("pickFileBtn").addEventListener("click", () => document.getElementById("pickFile").click());
+  document.getElementById("pickCapture").addEventListener("change", (e) => { const f = e.target.files[0]; if (f) useFile(f); e.target.value = ""; });
+  $c("camCancel").onclick = close;
+  $c("camSnap").onclick = countdown;
+  $c("camRetake").onclick = () => { shotBlob = null; startCam(); };
+  $c("camFlip").onclick = () => { facing = facing === "user" ? "environment" : "user"; startCam(); };
+  $c("camUse").onclick = () => {
+    if (!shotBlob) return;
+    useFile(new File([shotBlob], "camera.jpg", { type: "image/jpeg" }));
+    close();
+    const n = document.getElementById("pickName"); if (n && !n.value) n.focus();
+  };
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$c("camDlg").hidden) close(); });
 })();
 </script>
 </body>
