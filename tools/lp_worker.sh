@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 自訂學伴的小幫手：在 DGX 主機上跑（不是在容器裡）。
 # 小晴的伺服器把整理好的照片放在 data/custom/<id>/canvas.jpg 並放一個 lp_request 標記，
-# 這支程式看到就用 xiaozhi-liveportrait 的 idle_gen.py 做 8 秒待機影片 idle_lp.mp4。
+# 這支程式看到就用 LivePortrait 做待機影片 idle_lp.mp4。
+# 預設用 repo 裡的 idle_gen.py「AI 補角度」：--preset natural --close-lips 1（轉正、自動幅度、自然動作、閉嘴待機，12 秒一輪）
 #
 # 啟動：  nohup ~/livetalking/tools/lp_worker.sh > ~/livetalking/data/custom/lp_worker.log 2>&1 &
 # 開機自動啟動：crontab -e 加一行
@@ -10,7 +11,8 @@ set -u
 ROOT="${LIVETALKING_DIR:-$HOME/livetalking}"
 MODELS="${LP_MODELS:-$HOME/xiaozhi-speech/models}"
 IMAGE="${LP_IMAGE:-xiaozhi-liveportrait}"
-SECONDS_LOOP="${LP_SECONDS:-8}"
+SECONDS_LOOP="${LP_SECONDS:-}"                         # 空 = 照 preset（natural 12 秒）
+DEFAULT_ARGS="${LP_DEFAULT_ARGS:---preset natural --close-lips 1}"   # 沒有另外指定參數時用這組
 LP_ARGS="${LP_ARGS:-}"                                  # 例如 "--yaw 2 --close-lips 1"
 GF_LP="$ROOT/tools/liveportrait"                        # repo 裡的小晴版 idle_gen.py（有就優先用）
 CUSTOM="$ROOT/data/custom"
@@ -29,10 +31,15 @@ while true; do
     req_args=""
     argf="$dir/lp_args"; [ -f "$argf" ] || argf="$CUSTOM/lp_args"      # 這一張的參數；沒有就用全部共用的 data/custom/lp_args
     [ -f "$argf" ] && req_args="$(tr -cd 'a-z0-9 ._=-' < "$argf")"     # 例如：--preset natural --seconds 12
-    if [ -f "$GF_LP/idle_gen.py" ]; then script=/gf/idle_gen.py; extra=(-v "$GF_LP:/gf:ro"); fi
+    if [ -f "$GF_LP/idle_gen.py" ]; then
+      script=/gf/idle_gen.py; extra=(-v "$GF_LP:/gf:ro")
+      [ -z "$LP_ARGS$req_args" ] && req_args="$DEFAULT_ARGS"
+    fi
+    sec=(); [ -n "$SECONDS_LOOP" ] && sec=(--seconds "$SECONDS_LOOP")
+    echo "$(date '+%F %T') 參數：${sec[*]} $LP_ARGS $req_args"
     if docker run --rm --gpus all --ipc=host \
          -v "$MODELS:/models" -v "$dir:/char" "${extra[@]}" \
-         "$IMAGE" "$script" /char/canvas.jpg /char/idle_lp.mp4 --seconds "$SECONDS_LOOP" $LP_ARGS $req_args \
+         "$IMAGE" "$script" /char/canvas.jpg /char/idle_lp.mp4 "${sec[@]}" $LP_ARGS $req_args \
          > "$dir/lp.log" 2>&1 & 
        pid=$!
        while kill -0 "$pid" 2>/dev/null; do touch "$CUSTOM/.lp_worker"; sleep 5; done
