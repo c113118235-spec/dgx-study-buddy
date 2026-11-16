@@ -145,11 +145,11 @@ def _persona(pid=None, name=None) -> str:
     return _DEFAULT_PERSONA
 
 
-def _examples(pid=None) -> list:
+def _examples(pid=None, name=None) -> list:
     ex = _persona_cfg(pid).get("examples")
     if not ex:
         return list(EXAMPLES)
-    return [{"role": e["role"], "content": e["content"].replace("{name}", NAME)} for e in ex]
+    return [{"role": e["role"], "content": e["content"].replace("{name}", name or NAME)} for e in ex]
 
 
 def set_persona(avatar_session, pid):
@@ -309,7 +309,7 @@ def llm_response(message, avatar_session: 'BaseAvatar', datainfo: dict = {}):
             avatar_session._gf_history = history
         acts = _available_actions() if getattr(avatar_session, "_gf_pose", None) is not None else []   # 自訂學伴沒有動作
         pid = getattr(avatar_session, "_gf_persona", None) or default_persona_id()
-        examples = _examples(pid)
+        examples = _examples(pid, getattr(avatar_session, "_gf_name", None))   # 照片學伴：示範對話也用使用者取的名字
         if "wave" in acts:
             examples += [{"role": "user", "content": "我要去睡了，掰掰"},
                          {"role": "assistant", "content": "【溫柔】【揮手】晚安，祝你做個好夢！【開心】明天見喔。"}]
