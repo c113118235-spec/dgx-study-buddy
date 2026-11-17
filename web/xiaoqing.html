@@ -617,9 +617,11 @@ async function connect() {
     if (e.track.kind === "video") {
       if (SHOW_STATS) startStats(e.receiver);
       $("video").srcObject = e.streams[0];
-      $("video").onplaying = () => { $("video").classList.add("on"); $("loading").remove(); };
+      $("video").onplaying = () => { $("video").classList.add("on"); const l = $("loading"); if (l) l.remove(); };
+      $("video").play().catch(() => {});          // iPhone 有時不會自己開始播，主動叫一次
     } else {
       $("audio").srcObject = e.streams[0];
+      $("audio").play().catch(() => {});
     }
   });
   pc.addEventListener("connectionstatechange", () => {
@@ -673,13 +675,19 @@ async function rtcDiag() {
   return out;
 }
 
+// iPhone（尤其開了「低耗電模式」）會擋自動播放：在使用者按下開始的那一下先「解鎖」影音元素，之後就能自己播
+function unlockMedia() {
+  ["video", "audio"].forEach((id) => { const el = $(id); if (el) { const p = el.play(); if (p && p.catch) p.catch(() => {}); } });
+}
+
 function watchVideo() {
+  setTimeout(() => { if (!$("video").classList.contains("on")) $("video").play().catch(() => {}); }, 3000);
   setTimeout(async () => {
     if ($("video").classList.contains("on")) return;
     const d = await rtcDiag();
     console.warn("[xq] 沒有畫面", d);
     const why = d.state !== "connected" ? `影像連線沒打通（${d.state}）：學校或公司網路可能擋了，需要 TURN 中繼`
-      : d.frames > 0 ? "影像有收到，但瀏覽器沒有播放" : d.kb > 0 ? "有收到資料但解不出畫面" : "已連線但沒收到影像資料";
+      : d.frames > 0 ? "影像有收到，但瀏覽器擋住了自動播放（iPhone 開「低耗電模式」時常見），點下面的按鈕就會開始" : d.kb > 0 ? "有收到資料但解不出畫面" : "已連線但沒收到影像資料";
     const box = $("loading");
     if (!box) return;
     box.innerHTML = "";
@@ -1468,6 +1476,7 @@ function xqElSync(XQ) {
   let mine = store.get(), statusOf = {}, pollTimer = null;
 
   function begin(item) {
+    unlockMedia();                                          // 趁使用者點擊時解鎖播放（iPhone 需要）
     window.XQ_CUSTOM = item || null;
     $p("start").hidden = true;
     if (item) {
