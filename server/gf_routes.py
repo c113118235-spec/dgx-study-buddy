@@ -534,10 +534,45 @@ def _patch_session_cleanup():
     rm.RTCManager._gf_cleanup = True
 
 
+TURN_USAGE = os.path.join("data", "turn_usage.jsonl")
+
+
+def _log_turn_usage(pc, sid):
+    if getattr(pc, "_gf_usage_logged", False):
+        return
+    pc._gf_usage_logged = True
+    """連線結束時記下：這條連線有沒有走 TURN 中繼、傳了多少資料（ExpressTURN 免費版看不到用量，自己記）
+    一行一筆寫到 data/turn_usage.jsonl，用 tools/turn_usage.py 看這個月用了多少"""
+    try:
+        dtls = None
+        for t in pc.getTransceivers():
+            dtls = t.sender.transport or t.receiver.transport
+            if dtls:
+                break
+        if dtls is None:
+            return
+        pair = next(iter(dtls.transport._connection._nominated.values()), None)
+        if pair is None:
+            return
+        lt, rt = pair.local_candidate.type, pair.remote_candidate.type
+        st = next(iter(dtls._get_stats().values()))
+        rec = {"t": int(time.time()), "sid": sid, "local": lt, "remote": rt,
+               "relay": int(lt == "relay") + int(rt == "relay"),          # 0 = 直連；1 = 一端走中繼；2 = 兩端都走（算兩次）
+               "mb": round(((st.bytesSent or 0) + (st.bytesReceived or 0)) / 1e6, 2),
+               "sec": int(time.time() - getattr(pc, "_gf_t0", time.time()))}
+        with open(TURN_USAGE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+        if rec["relay"]:
+            logger.info(f"[gf-turn] {sid} 走中繼 {rec['mb']} MB（{lt} → {rt}，{rec['sec']} 秒）")
+    except Exception as e:
+        logger.debug(f"[gf-turn] 記錄用量失敗：{e}")
+
+
 async def _close_pc(pc, why):
     from server.session_manager import session_manager
     sid = getattr(pc, "_gf_sid", None)
     logger.info(f"[gf-session] 釋放 {sid}（{why}）")
+    _log_turn_usage(pc, sid)
     try:
         await pc.close()
     except Exception:
