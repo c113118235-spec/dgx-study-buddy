@@ -286,8 +286,10 @@ header h1, header .ai-tag, header .icon-btn, .persona-switch button { white-spac
 </style>
 <style>
 /* ───── 選擇學伴（開始畫面） ───── */
-.picker { position: fixed; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; padding: 20px 16px;
-  background: rgba(10,8,14,.72); backdrop-filter: blur(6px); overflow-y: auto; }
+.picker { position: fixed; inset: 0; z-index: 6; display: flex; align-items: flex-start; justify-content: center; padding: 20px 16px;
+  background: rgba(10,8,14,.72); backdrop-filter: blur(6px); overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+/* 內容比螢幕高時從最上面開始、可以滑；比螢幕矮時用 margin:auto 置中（align-items:center 會把上半部切掉、滑不上去） */
+.picker > .pick-panel, .picker > .pick-form { margin: auto 0; flex-shrink: 0; }
 .picker[hidden] { display: none; }
 .pick-panel, .pick-form { width: min(760px, 100%); background: #1B1822; color: #FFF; border: 1px solid rgba(255,255,255,.12);
   border-radius: 20px; padding: 28px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
