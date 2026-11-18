@@ -11,7 +11,9 @@
   連線關掉 = 這位使用者離開，名額馬上釋放。
 
 畫質可以在 data/av.json 調（改了下一條連線生效）：
-  {"ws_max_side": 720, "ws_jpeg_quality": 65, "ws_fps": 25}
+  {"ws_max_side": 1280, "ws_jpeg_quality": 82, "ws_fps": 25, "ws_auto": true}
+  ws_max_side／ws_jpeg_quality 是「最好」的畫質（1280 = 原始解析度，不縮）。
+  ws_auto（預設開）：網路跟不上、影像開始被丟時自動降一級（1080→960→720），順了再慢慢升回來。
 """
 from __future__ import annotations
 
@@ -28,12 +30,15 @@ VIDEO, AUDIO = b"\x01", b"\x02"
 
 
 def _conf():
-    c = {"ws_max_side": 720, "ws_jpeg_quality": 65, "ws_fps": 25}
+    c = {"ws_max_side": 1280, "ws_jpeg_quality": 82, "ws_fps": 25, "ws_auto": True}
     try:
         with open(AV_CONF, encoding="utf-8") as f:
             d = json.load(f)
         for k in c:
-            if isinstance(d.get(k), (int, float)) and d[k] > 0:
+            if k == "ws_auto":
+                if isinstance(d.get(k), bool):
+                    c[k] = d[k]
+            elif isinstance(d.get(k), (int, float)) and not isinstance(d.get(k), bool) and d[k] > 0:
                 c[k] = d[k]
     except Exception:
         pass
@@ -73,9 +78,13 @@ async def ws_media(request):
     player = HumanPlayer(session_manager.get_session(sid))
     vt, at = player.video, player.audio
     loop = asyncio.get_running_loop()
-    latest = {"jpg": None, "seq": 0}
+    latest = {"jpg": None, "seq": 0, "sent": 0}
     fresh = asyncio.Event()
-    logger.info(f"[gf-ws] 備用播放模式 {sid}（{c['ws_max_side']} px、品質 {c['ws_jpeg_quality']}、{c['ws_fps']} fps）")
+    # 畫質等級：第 0 級是設定的最好畫質，網路跟不上時往後降
+    top = (int(c["ws_max_side"]), int(c["ws_jpeg_quality"]))
+    levels = [top] + [(m, q) for m, q in ((1080, 75), (960, 70), (720, 62)) if m < top[0]]
+    lv = {"i": 0, "made": 0, "dropped": 0, "good": 0}
+    logger.info(f"[gf-ws] 備用播放模式 {sid}（最高 {top[0]} px、品質 {top[1]}、{c['ws_fps']} fps，自動調整 {'開' if c['ws_auto'] else '關'}）")
     await ws.send_json({"type": "hello", "sessionid": sid, "audio": {"rate": 16000, "format": "s16le"}, "video": "jpeg"})
 
     async def video_in():                       # 照 25 fps 取畫面（跟 WebRTC 同一套節奏），壓成 JPEG
@@ -86,10 +95,27 @@ async def ws_media(request):
             n += 1
             if n % skip:
                 continue
-            jpg = await loop.run_in_executor(None, _encode, f.to_ndarray(format="bgr24"), c["ws_max_side"], c["ws_jpeg_quality"])
+            m, q = levels[lv["i"]]
+            jpg = await loop.run_in_executor(None, _encode, f.to_ndarray(format="bgr24"), m, q)
             if jpg:
+                if latest["seq"] != latest["sent"]:
+                    lv["dropped"] += 1          # 上一格還沒送出去就被新的蓋掉 = 網路跟不上
                 latest["jpg"], latest["seq"] = jpg, latest["seq"] + 1
                 fresh.set()
+                lv["made"] += 1
+                if c["ws_auto"] and lv["made"] >= 50:     # 每 2 秒檢查一次
+                    ratio = lv["dropped"] / lv["made"]
+                    if ratio > 0.2 and lv["i"] < len(levels) - 1:
+                        lv["i"] += 1; lv["good"] = 0
+                        logger.info(f"[gf-ws] {sid} 網路跟不上（丟 {ratio:.0%}），畫質降到 {levels[lv['i']][0]} px")
+                    elif ratio < 0.02:
+                        lv["good"] += 1
+                        if lv["good"] >= 5 and lv["i"] > 0:      # 連續 10 秒都順，升一級
+                            lv["i"] -= 1; lv["good"] = 0
+                            logger.info(f"[gf-ws] {sid} 網路順了，畫質升到 {levels[lv['i']][0]} px")
+                    else:
+                        lv["good"] = 0
+                    lv["made"] = lv["dropped"] = 0
 
     async def video_out():                      # 網路慢時只送最新的一格（舊的直接丟掉，不會越積越慢）
         sent = 0
@@ -97,7 +123,7 @@ async def ws_media(request):
             await fresh.wait()
             fresh.clear()
             if latest["seq"] != sent and latest["jpg"]:
-                sent = latest["seq"]
+                sent = latest["sent"] = latest["seq"]     # 已經拿去送（之後才來的新格若又被蓋掉，才算丟）
                 await ws.send_bytes(VIDEO + latest["jpg"])
 
     async def audio_out():                      # 聲音一片都不丟：20 ms 一片 PCM
