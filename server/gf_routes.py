@@ -338,7 +338,7 @@ PUBLIC_PATHS |= {"/board", "/board/say"}          # 學伴黑板
 PUBLIC_PATHS |= {"/custom/create", "/custom/status", "/custom/thumb", "/custom/delete"}   # 自訂學伴
 PUBLIC_PATHS |= {"/tts/voices", "/tts/preview", "/voice/create", "/voice/delete"}         # 選聲音、試聽、自己的聲音
 PUBLIC_PATHS |= {"/el/sync"}
-PUBLIC_PATHS |= {"/bye"}                                                                  # 關掉頁面時釋放名額                                                             # 黑板：登入教學平台同步
+PUBLIC_PATHS |= {"/bye", "/ws_media"}                                                     # /ws_media：備用播放模式                                                                  # 關掉頁面時釋放名額                                                             # 黑板：登入教學平台同步
 
 
 @web.middleware

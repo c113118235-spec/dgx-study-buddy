@@ -759,8 +759,12 @@ function startWsMode(reason) {
       }, delay * 1000);
     }
   };
-  wsm.onclose = () => { if (!window.__xqLeaving) setStatus("連線中斷，請重新整理"); };
-  wsm.onerror = () => setStatus("備用播放模式連不上，請重新整理");
+  wsm.onclose = (ev) => {
+    if (window.__xqLeaving) return;
+    const t = sessionid ? "連線中斷，請重新整理" : `備用播放模式連不上（${ev.code}），請重新整理`;
+    setStatus(t);
+    if ($("loading")) $("loading").textContent = t;
+  };
 }
 
 function watchVideo() {
