@@ -651,6 +651,8 @@ def setup_gf_routes(app):
     except Exception:
         logger.exception("[gf-pose] 載入失敗")
     app.router.add_get("/iceservers", iceservers)
+    from server import gf_wsmedia
+    gf_wsmedia.setup(app)                    # 備用播放模式：WebRTC 打不通時改走 WebSocket（/ws_media）
     app.router.add_get("/gate", gate)
     app.router.add_post("/gate", gate)
     app.middlewares.append(gate_middleware)

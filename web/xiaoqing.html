@@ -26,6 +26,9 @@
     opacity: 0; transition: opacity .6s;
   }
   .stage video.on { opacity: 1; }
+  .stage img.wsv { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+    object-position: var(--focus-x) var(--focus-y); opacity: 0; transition: opacity .6s; }
+  .stage img.wsv.on { opacity: 1; }
   .stage::after {
     content: ""; position: absolute; inset: 0; pointer-events: none;
     background:
@@ -396,6 +399,7 @@ header h1, header .ai-tag, header .icon-btn, .persona-switch button { white-spac
 <div class="stage">
   <div class="loading" id="loading">連線中…</div>
   <video id="video" autoplay playsinline muted></video>
+  <img id="wsVideo" class="wsv" alt="" hidden>
   <audio id="audio" autoplay></audio>
 </div>
 
@@ -606,6 +610,7 @@ function startStats(receiver) {
 
 // ---------- WebRTC：跟 LiveTalking 官方網頁一樣的連線方式 ----------
 async function connect() {
+  if (FORCE_WS) return startWsMode("網址加了 ws=1");
   // STUN/TURN 清單向伺服器拿（設定了 Cloudflare TURN，校外沒有 VPN 也看得到影像）
   let iceServers = [{ urls: ["stun:stun.l.google.com:19302"] }];
   try {
@@ -627,6 +632,8 @@ async function connect() {
     }
   });
   pc.addEventListener("connectionstatechange", () => {
+    if (wsm) return;
+    if (pc.connectionState === "failed" && !$("video").classList.contains("on")) return startWsMode("WebRTC 打不通（failed）");
     if (pc.connectionState === "failed" || pc.connectionState === "disconnected")
       setStatus("連線中斷，請重新整理");
   });
@@ -655,7 +662,7 @@ async function connect() {
   sessionid = answer.sessionid;
   await pc.setRemoteDescription(answer);
   listen();
-  initActions();
+  if (!window.__xqActs) { window.__xqActs = 1; initActions(); }
   watchVideo();
 }
 
@@ -680,12 +687,91 @@ async function rtcDiag() {
 // iPhone（尤其開了「低耗電模式」）會擋自動播放：在使用者按下開始的那一下先「解鎖」影音元素，之後就能自己播
 function unlockMedia() {
   ["video", "audio"].forEach((id) => { const el = $(id); if (el) { const p = el.play(); if (p && p.catch) p.catch(() => {}); } });
+  try {                                    // 備用播放模式用 Web Audio 播聲音，也要在點擊時先開好
+    if (!window.__xqAC) window.__xqAC = new (window.AudioContext || window.webkitAudioContext)();
+    window.__xqAC.resume().catch(() => {});
+  } catch (e) {}
+}
+
+// ---------- 備用播放模式：WebRTC 打不通時，影像（JPEG）和聲音（PCM）改走 WebSocket（經過網頁本身的 https） ----------
+const FORCE_WS = params.get("ws") === "1";
+let wsm = null;
+function startWsMode(reason) {
+  if (wsm) return;
+  console.warn("[xq] 改用備用播放模式：", reason);
+  const oldSid = sessionid;
+  try { if (pc) pc.close(); } catch (e) {}
+  try { if (oldSid && navigator.sendBeacon) navigator.sendBeacon("bye", new Blob([JSON.stringify({ sessionid: oldSid })], { type: "application/json" })); } catch (e) {}
+  if (es) { es.close(); es = null; }
+  sessionid = null;
+  const box = $("loading");
+  if (box) { box.innerHTML = ""; box.textContent = "改用備用播放模式連線中…"; }
+  setStatus("");
+  const q = new URLSearchParams();
+  if (window.XQ_CUSTOM) q.set("avatar", window.XQ_CUSTOM.id);
+  if (window.XQ_VOICE) q.set("voice", window.XQ_VOICE);
+  const base = location.pathname.replace(/[^/]*$/, "");
+  wsm = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + "ws_media?" + q);
+  wsm.binaryType = "arraybuffer";
+  if (!window.__xqAC) { try { window.__xqAC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  const ac = window.__xqAC, img = $("wsVideo");
+  let next = 0, shown = false, lastUrl = null;
+  const BUF = 0.3;                          // 聲音緩衝 0.3 秒，影像也延後同樣時間，嘴型才對得上
+  img.hidden = false; $("video").hidden = true;
+  wsm.onmessage = (ev) => {
+    if (typeof ev.data === "string") {
+      let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.type === "hello") {
+        sessionid = d.sessionid;
+        listen();
+        if (!window.__xqActs) { window.__xqActs = 1; initActions(); }
+        window.XQ_ROUTE = "ws";
+      } else if (d.type === "error") {
+        const full = /maximum session/i.test(d.msg || "");
+        const t = full ? "目前使用的人數已滿，請過一兩分鐘再重新整理" : ("連不上小晴：" + (d.msg || ""));
+        if ($("loading")) $("loading").textContent = t;
+        setStatus(t);
+      }
+      return;
+    }
+    const u8 = new Uint8Array(ev.data);
+    if (u8[0] === 2) {                      // 聲音：20 ms、16 kHz、16-bit PCM
+      if (!ac) return;
+      if (ac.state === "suspended") ac.resume().catch(() => {});
+      const pcm = new Int16Array(ev.data.slice(1));
+      const f = new Float32Array(pcm.length);
+      for (let i = 0; i < pcm.length; i++) f[i] = pcm[i] / 32768;
+      const b = ac.createBuffer(1, f.length, 16000);
+      b.getChannelData(0).set(f);
+      const src = ac.createBufferSource();
+      src.buffer = b; src.connect(ac.destination);
+      const now = ac.currentTime;
+      if (next < now + 0.02 || next > now + 1.5) next = now + BUF;     // 斷掉或積太多：重新對齊
+      src.start(next); next += b.duration;
+    } else if (u8[0] === 1) {               // 影像：一格 JPEG，延後到跟聲音同步再顯示
+      const blob = new Blob([u8.subarray(1)], { type: "image/jpeg" });
+      const delay = ac ? Math.max(0, Math.min(1.5, next - ac.currentTime)) : BUF;
+      setTimeout(() => {
+        const url = URL.createObjectURL(blob);
+        img.onload = () => { if (lastUrl && lastUrl !== url) URL.revokeObjectURL(lastUrl); lastUrl = url; };
+        img.src = url;
+        if (!shown) { shown = true; img.classList.add("on"); const l = $("loading"); if (l) l.remove(); }
+      }, delay * 1000);
+    }
+  };
+  wsm.onclose = () => { if (!window.__xqLeaving) setStatus("連線中斷，請重新整理"); };
+  wsm.onerror = () => setStatus("備用播放模式連不上，請重新整理");
 }
 
 function watchVideo() {
   setTimeout(() => { if (!$("video").classList.contains("on")) $("video").play().catch(() => {}); }, 3000);
+  setTimeout(async () => {                 // 7 秒還沒打通 WebRTC：直接改走備用播放模式（https）
+    if (wsm || $("video").classList.contains("on")) return;
+    const d = await rtcDiag();
+    if (d.state !== "connected") startWsMode(`WebRTC 7 秒沒打通（${d.state}）`);
+  }, 7000);
   setTimeout(async () => {
-    if ($("video").classList.contains("on")) return;
+    if (wsm || $("video").classList.contains("on")) return;
     const d = await rtcDiag();
     console.warn("[xq] 沒有畫面", d);
     const why = d.state !== "connected" ? `影像連線沒打通（${d.state}）：學校或公司網路可能擋了，需要 TURN 中繼`
@@ -897,7 +983,8 @@ document.addEventListener("keyup", (e) => { if (e.code === "Space" && document.a
 function leave() {             // 關掉／離開頁面：馬上告訴伺服器釋放名額（手機 Safari 不一定會觸發 beforeunload，所以也聽 pagehide）
   try {
     if (sessionid && navigator.sendBeacon) navigator.sendBeacon("bye", new Blob([JSON.stringify({ sessionid })], { type: "application/json" }));
-    es && es.close(); pc && pc.close();
+    window.__xqLeaving = true;
+    es && es.close(); pc && pc.close(); wsm && wsm.close();
   } catch (e) {}
 }
 window.addEventListener("beforeunload", leave);

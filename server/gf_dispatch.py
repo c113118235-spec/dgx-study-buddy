@@ -135,6 +135,75 @@ async def _offer(request, conf):
     return resp
 
 
+async def _pick_worker(conf):
+    best, best_n = None, None
+    counts = await asyncio.gather(*[_worker_count(w["url"]) for w in conf["workers"]])
+    for w, n in zip(conf["workers"], counts):
+        if n is None or n >= int(w.get("max", 5)):
+            continue
+        if best_n is None or n < best_n:
+            best, best_n = w["url"], n
+    return best, best_n
+
+
+async def _ws_media(request, conf):
+    """備用播放模式（WebSocket）：主程序滿了就整條轉給 worker，兩邊的訊息原封不動轉送"""
+    if _local_count() < int(conf.get("local_max", 5)):
+        return None
+    best, best_n = await _pick_worker(conf)
+    ws = web.WebSocketResponse(heartbeat=20, max_msg_size=1 << 22, compress=False)
+    await ws.prepare(request)
+    if best is None:
+        await ws.send_json({"type": "error", "msg": "Maximum session limit reached"})
+        await ws.close()
+        return ws
+    url = best.replace("http", "ws", 1).rstrip("/") + request.rel_url.path_qs
+    headers = {k: v for k, v in request.headers.items() if k.lower() in ("cookie", "user-agent", "x-forwarded-for")}
+    sid = None
+    try:
+        async with _session().ws_connect(url, headers=headers, max_msg_size=1 << 22, heartbeat=20, compress=0) as up:
+            async def down():
+                nonlocal sid
+                async for m in up:
+                    if m.type == aiohttp.WSMsgType.TEXT:
+                        if sid is None:
+                            try:
+                                d = json.loads(m.data)
+                                if d.get("type") == "hello":
+                                    sid = d.get("sessionid")
+                                    _where[sid] = best
+                                    logger.info(f"[gf-dispatch] 備用播放 {sid} → {best}（那邊原本 {best_n} 人）")
+                            except Exception:
+                                pass
+                        await ws.send_str(m.data)
+                    elif m.type == aiohttp.WSMsgType.BINARY:
+                        await ws.send_bytes(m.data)
+                    else:
+                        break
+
+            async def upstream():
+                async for m in ws:
+                    if m.type == aiohttp.WSMsgType.TEXT:
+                        await up.send_str(m.data)
+                    elif m.type == aiohttp.WSMsgType.BINARY:
+                        await up.send_bytes(m.data)
+                    else:
+                        break
+
+            tasks = [asyncio.ensure_future(down()), asyncio.ensure_future(upstream())]
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in tasks:
+                t.cancel()
+    except Exception as e:
+        logger.warning(f"[gf-dispatch] 備用播放轉給 {best} 失敗：{e}")
+    finally:
+        if sid:
+            _where.pop(sid, None)
+        if not ws.closed:
+            await ws.close()
+    return ws
+
+
 @web.middleware
 async def dispatch_middleware(request, handler):
     conf = _load()
@@ -143,6 +212,9 @@ async def dispatch_middleware(request, handler):
     path = request.path
     if path == "/offer" and request.method == "POST":
         r = await _offer(request, conf)
+        return r if r is not None else await handler(request)
+    if path == "/ws_media":
+        r = await _ws_media(request, conf)
         return r if r is not None else await handler(request)
     if path in SESSION_PATHS:
         sid, body = await _sid_of(request)
