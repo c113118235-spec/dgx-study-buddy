@@ -688,10 +688,20 @@ async function rtcDiag() {
 function unlockMedia() {
   ["video", "audio"].forEach((id) => { const el = $(id); if (el) { const p = el.play(); if (p && p.catch) p.catch(() => {}); } });
   try {                                    // 備用播放模式用 Web Audio 播聲音，也要在點擊時先開好
+    // iPhone／iPad：Web Audio 預設跟「靜音模式」走（開靜音就沒聲音），改成跟影片一樣的播放類型
+    if (navigator.audioSession) { try { navigator.audioSession.type = "playback"; } catch (e) {} }
     if (!window.__xqAC) window.__xqAC = new (window.AudioContext || window.webkitAudioContext)();
-    window.__xqAC.resume().catch(() => {});
+    const ac = window.__xqAC;
+    ac.resume().catch(() => {});
+    const b = ac.createBuffer(1, 1, 22050), s = ac.createBufferSource();   // 播一小段無聲，iOS 才算真正解鎖
+    s.buffer = b; s.connect(ac.destination); s.start(0);
   } catch (e) {}
 }
+// 聲音被瀏覽器擋住時：使用者點畫面任何地方就再解鎖一次
+["pointerdown", "touchend", "keydown"].forEach((t) => document.addEventListener(t, () => {
+  const ac = window.__xqAC;
+  if (ac && ac.state !== "running") { unlockMedia(); if (window.__xqMuteHint) { window.__xqMuteHint = 0; setStatus(""); } }
+}, { passive: true }));
 
 // ---------- 備用播放模式：WebRTC 打不通時，影像（JPEG）和聲音（PCM）改走 WebSocket（經過網頁本身的 https） ----------
 const FORCE_WS = params.get("ws") === "1";
@@ -737,7 +747,10 @@ function startWsMode(reason) {
     const u8 = new Uint8Array(ev.data);
     if (u8[0] === 2) {                      // 聲音：20 ms、16 kHz、16-bit PCM
       if (!ac) return;
-      if (ac.state === "suspended") ac.resume().catch(() => {});
+      if (ac.state !== "running") {
+        ac.resume().catch(() => {});
+        if (!window.__xqMuteHint) { window.__xqMuteHint = 1; setStatus("聲音被瀏覽器擋住了，點一下畫面開啟聲音"); }
+      }
       const pcm = new Int16Array(ev.data.slice(1));
       const f = new Float32Array(pcm.length);
       for (let i = 0; i < pcm.length; i++) f[i] = pcm[i] / 32768;
