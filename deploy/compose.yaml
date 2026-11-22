@@ -1,0 +1,90 @@
+# DGX 學伴一鍵部署（docker compose）
+#   cd ~/xiaoqing/livetalking/deploy && docker compose up -d
+# 設定都在同資料夾的 .env（install.sh 會幫你建立；金鑰不要 commit）
+# 服務：
+#   xiaoqing          主程序 :8010（網頁、門禁、分配連線，前 5 人）
+#   xiaoqing-w1~w3    worker :8021-8023（各 5 人，合計 20 人）
+#   xiaoqing-indextts 本機語音 IndexTTS-2.5 :8007
+#   xiaoqing-asr      語音辨識 Whisper :8001
+#   xiaoqing-tunnel   公開 https 網址（Cloudflare 臨時網址，docker logs 看網址）
+name: xiaoqing
+
+x-gpu: &gpu
+  network_mode: host
+  ipc: host
+  restart: unless-stopped
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+x-app: &app
+  <<: *gpu
+  image: xiaoqing/app:${XQ_VERSION:?先跑 install.sh 或在 .env 設定 XQ_VERSION}
+  working_dir: /app
+  env_file: [.env]
+  volumes:
+    - ${XQ_CODE:-..}:/app
+
+x-appcmd: &appcmd [python, app.py, --transport, webrtc, --model, wav2lip, --avatar_id, xiaoqing, --tts, gftts, --llm_provider, iai]
+
+services:
+  xiaoqing:
+    <<: *app
+    container_name: xiaoqing
+    command: *appcmd
+    depends_on: [xiaoqing-indextts, xiaoqing-asr]
+
+  xiaoqing-w1:
+    <<: *app
+    container_name: xiaoqing-w1
+    environment: {GF_WORKER: "1"}
+    command: [python, app.py, --transport, webrtc, --model, wav2lip, --avatar_id, xiaoqing, --tts, gftts, --llm_provider, iai, --listenport, "8021", --max_session, "5"]
+
+  xiaoqing-w2:
+    <<: *app
+    container_name: xiaoqing-w2
+    environment: {GF_WORKER: "1"}
+    command: [python, app.py, --transport, webrtc, --model, wav2lip, --avatar_id, xiaoqing, --tts, gftts, --llm_provider, iai, --listenport, "8022", --max_session, "5"]
+
+  xiaoqing-w3:
+    <<: *app
+    container_name: xiaoqing-w3
+    environment: {GF_WORKER: "1"}
+    command: [python, app.py, --transport, webrtc, --model, wav2lip, --avatar_id, xiaoqing, --tts, gftts, --llm_provider, iai, --listenport, "8023", --max_session, "5"]
+
+  xiaoqing-indextts:
+    <<: *gpu
+    image: xiaoqing/indextts:${XQ_VERSION}
+    container_name: xiaoqing-indextts
+    working_dir: /idx
+    environment:
+      PORT: "8007"
+      HF_HOME: /models/hub
+    volumes:
+      - ${XQ_CODE:-..}/data/voices:/voices:ro
+      - ${XQ_CODE:-..}/tools/indextts:/srv:ro
+      - ${XQ_MODELS:?.env 要設定 XQ_MODELS}:/models
+      - ${XQ_INDEXTTS_SRC:?.env 要設定 XQ_INDEXTTS_SRC}:/idx
+    command: [python, /srv/indextts_server.py]
+
+  xiaoqing-asr:
+    <<: *gpu
+    image: xiaoqing/asr:${XQ_VERSION}
+    container_name: xiaoqing-asr
+    working_dir: /app
+    env_file: [asr.env]          # 模型名稱與語言（install.sh 從原本那台複製過來）
+    volumes:
+      - ${XQ_MODELS}:/models
+    command: [uvicorn, app:app, --host, 0.0.0.0, --port, "8001"]
+
+  xiaoqing-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: xiaoqing-tunnel
+    network_mode: host
+    restart: unless-stopped
+    command: [tunnel, --no-autoupdate, --protocol, http2, --url, http://localhost:8010]
+    depends_on: [xiaoqing]

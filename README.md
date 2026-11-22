@@ -55,7 +55,7 @@ cloudflared 容器 ──► 公開 https 網址
 
 ## 執行方式（DGX Spark）
 
-> **Docker 一鍵部署（docker compose）整理中，11/20 前完成。** 下面是目前的啟動方式。
+> **部署到其他 DGX：用 Docker 一鍵部署，見 [deploy/README.md](deploy/README.md)**（`deploy/pack.sh` 打包 → `install.sh` 安裝 → `docker compose` 啟動）。下面是 spark-ad05 上原本的手動啟動方式。
 
 1. **語音服務**
    ```bash
