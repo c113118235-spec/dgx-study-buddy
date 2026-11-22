@@ -15,6 +15,7 @@
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import html
 import os
@@ -301,6 +302,33 @@ def _from_tunnel(request) -> bool:
     return "Cf-Connecting-Ip" in request.headers or "cf-connecting-ip" in request.headers
 
 
+# 用對外 IP 直接連進來（例如路由器把 163.18.x.x:port 轉到這台）也要通關碼；
+# 區網、VPN、本機（192.168.x、10.x、172.16-31.x、127.x）照舊不用。GF_GATE_PUBLIC_IP=0 可關掉這條
+GATE_PUBLIC_IP = os.getenv("GF_GATE_PUBLIC_IP", "1") != "0"
+
+
+def _client_ip(request) -> str:
+    return request.headers.get("Cf-Connecting-Ip") or request.remote or ""
+
+
+def _from_outside(request) -> bool:
+    if _from_tunnel(request):
+        return True
+    if not GATE_PUBLIC_IP:
+        return False
+    try:
+        ip = ipaddress.ip_address((request.remote or "").split("%")[0])
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local)
+
+
+def _is_https(request) -> bool:
+    return request.secure or _from_tunnel(request) or request.headers.get("X-Forwarded-Proto", "") == "https"
+
+
 GATE_HTML = """<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>小晴</title>
 <style>body{{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#0B0A10;color:#fff;
@@ -317,7 +345,7 @@ _fails = {}
 
 async def gate(request):
     if request.method == "POST":
-        ip = request.headers.get("Cf-Connecting-Ip", request.remote or "")
+        ip = _client_ip(request)
         n, t0 = _fails.get(ip, (0, 0.0))
         if n >= 5 and time.time() - t0 < 300:
             return web.Response(text=GATE_HTML.format(err="錯太多次了，請 5 分鐘後再試"), content_type="text/html", status=429)
@@ -325,7 +353,8 @@ async def gate(request):
         if ACCESS_CODE and hmac.compare_digest(str(code), ACCESS_CODE):
             _fails.pop(ip, None)
             resp = web.HTTPFound("/xiaoqing.html?mode=chat")
-            resp.set_cookie(COOKIE, COOKIE_VALUE, max_age=7 * 86400, httponly=True, secure=True, samesite="Lax")
+            # http（直接用 IP 連）時 cookie 不能設 secure，不然瀏覽器不存、會一直回到通關碼頁
+            resp.set_cookie(COOKIE, COOKIE_VALUE, max_age=7 * 86400, httponly=True, secure=_is_https(request), samesite="Lax")
             raise resp
         _fails[ip] = (n + 1, time.time())
         await asyncio.sleep(1)
@@ -343,8 +372,8 @@ PUBLIC_PATHS |= {"/bye", "/ws_media"}                                           
 
 @web.middleware
 async def gate_middleware(request, handler):
-    if not _from_tunnel(request):
-        return await handler(request)          # 區網 / VPN：照舊
+    if not _from_outside(request):
+        return await handler(request)          # 區網 / VPN / 本機：照舊
     path = request.path
     if path == "/gate":
         return await handler(request)
