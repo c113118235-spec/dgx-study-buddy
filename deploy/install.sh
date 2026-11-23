@@ -35,11 +35,16 @@ need=$(du -sk "$B" | cut -f1); avail=$(df -k "$HOME" | awk 'NR==2{print $4}')
 [ "$avail" -gt $((need * 2)) ] || echo "!! 家目錄剩餘空間可能不夠（需要約 $((need * 2 / 1048576)) GB）"
 
 say "[2/7] 載入映像"
-if docker image inspect "xiaoqing/app:$VER" >/dev/null 2>&1 && docker image inspect "xiaoqing/asr:$VER" >/dev/null 2>&1; then
-  echo "   已經載入過，跳過"
-else
+have_all=1
+for t in app indextts asr liveportrait; do docker image inspect "xiaoqing/$t:$VER" >/dev/null 2>&1 || have_all=0; done
+if [ "$have_all" = 1 ]; then
+  echo "   映像都已經在了，跳過"
+elif [ -f "$B/images.tar" ]; then
   docker load -i "$B/images.tar"
+else
+  die "這台還沒有映像 xiaoqing/*:$VER，資料夾裡也沒有 images.tar。請在原本那台跑：docker save $(cat "$B/IMAGES" 2>/dev/null) | ssh $(whoami)@$(hostname -I | awk '{print $1}') docker load"
 fi
+docker image inspect cloudflare/cloudflared:latest >/dev/null 2>&1 || docker pull cloudflare/cloudflared:latest || echo "!! 抓不到 cloudflared，公開網址會起不來"
 
 say "[3/7] 解開程式與執行資料 → $LT"
 mkdir -p "$LT"

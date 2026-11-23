@@ -2,6 +2,7 @@
 # 在「已經跑得起來的那台 DGX」（spark-ad05）上打包，產生一個資料夾，帶到別台 DGX 跑 install.sh 就能部署。
 #   bash ~/livetalking/deploy/pack.sh                # 打包到 ~/xiaoqing-bundle-<日期>
 #   bash ~/livetalking/deploy/pack.sh --dry-run      # 只檢查、估大小，不打包
+#   SKIP_IMAGES=1 bash ~/livetalking/deploy/pack.sh  # 不存映像（映像改用 docker save | ssh 直接傳到另一台，省 30 多 GB 硬碟和時間）
 # 不會打包：金鑰（.env、data/llm.json、data/turn.json、data/api/）、使用者資料（照片學伴、自己錄的聲音）、log
 # 可用環境變數改來源：MODELS、IDX、OUT、VER、MODEL_DIRS
 set -euo pipefail
@@ -54,8 +55,15 @@ for i in "${!SRC_IMAGES[@]}"; do
   t="xiaoqing/${DST_NAMES[$i]}:$VER"; docker tag "${SRC_IMAGES[$i]}" "$t"; TAGS+=("$t")
 done
 TAGS+=(cloudflare/cloudflared:latest)
-say "存映像（幾十 GB，要等一陣子）：${TAGS[*]}"
-docker save -o "$OUT/images.tar" "${TAGS[@]}"
+if [ "${SKIP_IMAGES:-0}" = 1 ]; then
+  rm -f "$OUT/images.tar"
+  say "SKIP_IMAGES=1：不存映像。直接傳到另一台："
+  echo "   docker save ${TAGS[*]} | ssh nkust@<那台IP> docker load"
+else
+  say "存映像（幾十 GB，要等一陣子）：${TAGS[*]}"
+  docker save -o "$OUT/images.tar" "${TAGS[@]}"
+fi
+echo "${TAGS[*]}" > "$OUT/IMAGES"
 
 # 4. 程式（git 最新 commit）
 say "打包程式碼"
@@ -85,7 +93,7 @@ echo "   語音辨識設定：$(tr '\n' ' ' < "$OUT/asr.env")"
 cp "$LT/deploy/install.sh" "$OUT/install.sh"; chmod +x "$OUT/install.sh"
 echo "$VER" > "$OUT/VERSION"
 git -C "$LT" rev-parse --short HEAD > "$OUT/COMMIT"
-(cd "$OUT" && sha256sum images.tar code.tar.gz runtime.tar.gz models.tar index-tts.tar.gz > SHA256SUMS)
+(cd "$OUT" && sha256sum $(ls images.tar code.tar.gz runtime.tar.gz models.tar index-tts.tar.gz 2>/dev/null) > SHA256SUMS)
 
 say "完成：$OUT（$(du -sh "$OUT" | cut -f1)）"
 echo "   複製到別台 DGX：rsync -a --progress $OUT/ nkust@<那台IP>:~/$(basename "$OUT")/"
