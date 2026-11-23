@@ -1,7 +1,7 @@
 .env
 *.env
 __pycache__/
-models/
+/models/
 *.pth
 data/tmp/
 data/avatars/wav2lip256_avatar1/
@@ -23,7 +23,7 @@ pretrained
 .DS_Store
 workspace/log_ngp.txt
 .idea
-models/
+/models/
 *.log
 dist
 *.log
