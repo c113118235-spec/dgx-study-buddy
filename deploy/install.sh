@@ -23,7 +23,9 @@ docker compose version >/dev/null 2>&1 || die "沒有 docker compose（v2）"
 docker info 2>/dev/null | grep -qi nvidia || echo "!! docker 好像沒有 NVIDIA runtime，GPU 可能用不了"
 nvidia-smi -L >/dev/null 2>&1 || echo "!! nvidia-smi 執行失敗，請確認顯卡驅動"
 for c in xiaoqing xiaoqing-indextts xiaozhi-asr; do
-  if docker ps --format '{{.Names}}' | grep -qx "$c"; then
+  # 只警告不是這套 compose 起的舊容器（重跑 install.sh 時自己的容器不算）
+  if docker ps --format '{{.Names}}' | grep -qx "$c" && \
+     [ "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$c" 2>/dev/null)" != xiaoqing ]; then
     echo "!! 這台已經有容器 $c 在跑；會跟新的搶 port（8010/8007/8001），請先 docker rm -f $c"
   fi
 done
