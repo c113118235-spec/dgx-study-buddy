@@ -107,8 +107,12 @@ LPENV="LIVETALKING_DIR=$LT LP_MODELS=$MODELS LP_IMAGE=xiaoqing/liveportrait:$VER
 pkill -f "tools/lp_worker.sh" 2>/dev/null || true
 env $LPENV nohup "$LT/tools/lp_worker.sh" > "$LT/data/custom/lp_worker.log" 2>&1 &
 CRON="@reboot sleep 60 && env $LPENV nohup $LT/tools/lp_worker.sh > $LT/data/custom/lp_worker.log 2>&1 &"
-(crontab -l 2>/dev/null | grep -v 'tools/lp_worker.sh'; echo "$CRON") | crontab -
-echo "   照片學伴小幫手已啟動，並設定開機自動執行"
+# 這台原本沒有 crontab 時 crontab -l 會失敗，不能讓它中斷安裝
+if { crontab -l 2>/dev/null | grep -v 'tools/lp_worker.sh' || true; echo "$CRON"; } | crontab -; then
+  echo "   照片學伴小幫手已啟動，並設定開機自動執行"
+else
+  echo "!! 照片學伴小幫手已啟動，但開機自動執行沒設定成功（crontab）"
+fi
 
 say "[7/7] 等服務起來（第一次要 1～3 分鐘）"
 ok() { curl -s -o /dev/null -m 3 -w '%{http_code}' "$1" | grep -qE '^[1-4]'; }
